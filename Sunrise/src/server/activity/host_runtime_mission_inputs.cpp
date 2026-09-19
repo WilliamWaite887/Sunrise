@@ -80,6 +80,51 @@ void report_mission_input_refusal(const Event& event) noexcept {
     }
 }
 
+/**
+ * Reports one Sense object the decoder could not hand to the mission feed.
+ *
+ * A group whose schema has no native body decoder is skipped silently, so a slot the game reports
+ * every tick looks identical to one it never reports at all. The map generator is the standing
+ * example: its Auth is encoded already, but nothing reads the reported side, so the meaning of the
+ * banks selecting an island's population stays unestablished. Naming the schema and status here is
+ * what separates "no decoder yet" from "never sensed".
+ */
+void report_sense_object_skipped(const Event& event,
+                                 const middleware::bap::activity_message::sense_update::
+                                     DecodedObject& object) noexcept {
+    namespace sense = middleware::bap::activity_message::sense_update;
+    const std::string_view status = object.status == sense::ObjectStatus::unsupportedField
+                                        ? "unsupported_field"
+                                    : object.status == sense::ObjectStatus::schemaUnavailable
+                                        ? "schema_unavailable"
+                                    : object.status == sense::ObjectStatus::targetUnavailable
+                                        ? "target_unavailable"
+                                    : object.status == sense::ObjectStatus::unsafeCount
+                                        ? "unsafe_count"
+                                    : object.status == sense::ObjectStatus::malformed
+                                        ? "malformed"
+                                        : "no_generation";
+    std::array<char, core::log::kLineCapacity> line{};
+    const int written = std::snprintf(line.data(),
+                                      line.size(),
+                                      "ev=sense_object result=skipped reason=%.*s schema=%08X "
+                                      "type=%u registry=%08X object=%08X slot=%u",
+                                      static_cast<int>(status.size()),
+                                      status.data(),
+                                      object.senseSchema,
+                                      static_cast<unsigned>(object.slotType),
+                                      object.registryKey,
+                                      object.objectTag,
+                                      static_cast<unsigned>(object.slotIndex));
+    if (written > 0) {
+        core::log::write(
+            core::log::Channel::server,
+            core::log::Level::debug,
+            {line.data(), (std::min)(static_cast<std::size_t>(written), line.size() - 1)});
+    }
+    static_cast<void>(event);
+}
+
 /** @return True when durable mission State still owes this retained accepted row. */
 [[nodiscard]] bool mission_input_owed(const MissionInputRecord& record) noexcept {
     state::activity::mission::InputSequenceSnapshot cursors{};
@@ -241,6 +286,7 @@ bool mission_input_sense_snapshot(std::uint64_t sequence,
         for (std::size_t index = 0; copied && index < packet.objectCount; ++index) {
             const sense::DecodedObject& object = packet.objects[index];
             if (object.status != sense::ObjectStatus::decoded || !object.hasGeneration) {
+                report_sense_object_skipped(event, object);
                 continue;
             }
             if (object.firstValue > packet.valueCount

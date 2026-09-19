@@ -44,7 +44,14 @@ Status retain_population(MissionState& candidate,
     SquadPopulation next = population;
     next.requestKey = intent.requestKey;
     next.expectedAlive = expectedAlive;
-    next.alive = next.maximumObservedAlive = next.maximumObservedCreated = 0;
+    next.alive = next.maximumObservedCreated = 0;
+    // A cohort reads cleared only once the squad was seen at full strength, which guards against
+    // a body counted before its members exist. Every caller reaching here already holds a nonzero
+    // spawnGeneration, so the client has confirmed this placement, and the authored count is that
+    // evidence. Waiting for a sense update instead loses squads that die between two of them: a
+    // single-member squad killed on sight reports alive 0 first, leaves the mark at zero and can
+    // never clear.
+    next.maximumObservedAlive = expectedAlive;
     next.lastInputSequence = 0;
     next.generationKnown = next.aliveKnown = false;
     for (auto& existing : candidate.squadPopulations) {

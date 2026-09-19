@@ -17,3 +17,7 @@
 /out/
 /docs/
 /Sunrise/docs/
+
+# graphify
+/graphify-out/
+/.graphify_cache/

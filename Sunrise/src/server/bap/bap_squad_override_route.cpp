@@ -3,9 +3,12 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <mutex>
 #include <optional>
 #include <span>
+
+#include "../../core/logging/log.h"
 
 #include "../../state/build_data/runtime.h"
 #include "../activity/host_runtime.h"
@@ -287,13 +290,21 @@ squad_override_available_locked(const Session& session,
                    || group.authCount < group.stateLocalRosterGroup.slotCount);
     }
     if (lease.authCount >= lease.authBodies.size()) {
+        core::log::write(core::log::Channel::server,
+                         core::log::Level::warn,
+                         "ev=activity stage=squad_admit result=refused reason=auth_capacity");
         return false;
     }
     if (!target.stateLocalRoster) {
         return lease.groupCount < lease.groups.size();
     }
-    if (stateLocalGroups != lease.groupCount
-        || canonicalGroups + stateLocalGroups >= roster_message::kPublishedGroupCapacity
+    // Only a state-local group adds a published roster group; a canonical-target group addresses
+    // one the destination already publishes and carries no generated group of its own. So the
+    // published-group budget is canonical + state-local, which is what the capacity test below
+    // spends. Requiring the lease to hold *nothing but* state-local groups is a stronger claim
+    // than that budget needs, and it fails as soon as a mission places one canonical-target squad:
+    // every later state-local admission is refused for the rest of the activity, in every region.
+    if (canonicalGroups + stateLocalGroups >= roster_message::kPublishedGroupCapacity
         || !generated_key_is_unique(layout, target.registryKey)) {
         return false;
     }
@@ -330,12 +341,40 @@ bool request_activity_squad_override(
     std::size_t linkCount = 0;
     const Session* const session = unique_activity_link_locked(binding, linkCount);
     const std::int32_t region = session != nullptr ? selected_region_index_locked(*session) : -1;
-    const bool queued = expectedRegion >= 0 && expectedGeneration != 0 && session != nullptr
-                        && session->activity.bindingGeneration == expectedGeneration
-                        && squad_override_available_locked(
-                            *session, target, stateLocalRosterGroup, expectedGeneration)
-                        && region == expectedRegion
-                        && activity::host::request_squad_override(binding,
+    // Names the exact gate that refused, so a refusal is diagnosable without bisecting the chain.
+    const char* refusal = nullptr;
+    if (expectedRegion < 0) {
+        refusal = "expected_region";
+    } else if (expectedGeneration == 0 || session == nullptr) {
+        refusal = "no_session";
+    } else if (session->activity.bindingGeneration != expectedGeneration) {
+        refusal = "generation";
+    } else if (!squad_override_available_locked(
+                   *session, target, stateLocalRosterGroup, expectedGeneration)) {
+        refusal = "unavailable";
+    } else if (region != expectedRegion) {
+        refusal = "region_mismatch";
+    }
+    if (refusal != nullptr) {
+        std::array<char, 160> line{};
+        const int written = std::snprintf(line.data(),
+                                          line.size(),
+                                          "ev=activity stage=squad_route result=refused reason=%s "
+                                          "region=%d expected=%d key=%08X slot=%u statelocal=%u",
+                                          refusal,
+                                          region,
+                                          expectedRegion,
+                                          target.registryKey,
+                                          static_cast<unsigned>(target.slotIndex),
+                                          target.stateLocalRoster ? 1U : 0U);
+        if (written > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             {line.data(), static_cast<std::size_t>(written)});
+        }
+        return false;
+    }
+    const bool queued = activity::host::request_squad_override(binding,
                                                                   target,
                                                                   stateLocalRosterGroup,
                                                                   requestedCounts,

@@ -136,6 +136,8 @@ void report_roster_push(Session& session,
     const std::size_t emptyEngagementAuth = empty_auth_count(snapshot, kEngagementSensorSlotType);
     const state::activity::membership::ClientPlacement placement =
         client_placement(session, nullptr);
+    const state::activity::membership::ClientPlacement sourcePlacement =
+        state::activity::membership::reported_placement(session.activity.source.sessionId);
     std::array<char, core::log::kLineCapacity> line{};
     const int written =
         std::snprintf(line.data(),
@@ -147,7 +149,12 @@ void report_roster_push(Session& session,
                       "sceneempty=%zu engageempty=%zu "
                       "keygroup=0x%X grant=%d region=%u slice=%u spawn=0x%X join=0x%llX "
                       "player=0x%llX pending_region=%d current_region=%d client_bubble=%d held=%d "
-                      "entered=%d selected=%d hash=0x%016llX force=0x%02X",
+                      "entered=%d selected=%d hash=0x%016llX force=0x%02X "
+                      // The region resolves from the SOURCE session and the link role, while the
+                      // placement above is read from the published session. When a roster is built
+                      // for the wrong region these are what disagree, so log them directly rather
+                      // than inferring them from the published side.
+                      "role=%u src_player_region=%d src_current=%d src_pending=%d advertised=%d",
                       kOutcomeNames[static_cast<std::size_t>(outcome)],
                       static_cast<unsigned long long>(session.activity.session.sessionId),
                       session.activity.role == ActivityClientRole::publicTarget ? 1U : 0U,
@@ -187,7 +194,12 @@ void report_roster_push(Session& session,
                       placement.clientInWorld && placement.currentRegion >= 0 ? 1 : 0,
                       session.activityMissionSeed.scriptSelected ? 1 : 0,
                       static_cast<unsigned long long>(bodyHash),
-                      static_cast<unsigned>(forced));
+                      static_cast<unsigned>(forced),
+                      static_cast<unsigned>(session.activity.role),
+                      state::activity::membership::player_region(session.activity.source.sessionId),
+                      sourcePlacement.currentRegion,
+                      sourcePlacement.region,
+                      session.activity.advertisedRegion);
     if (written > 0) {
         // A skipped unchanged body is normal steady state, not a refusal worth a warning.
         const bool quiet =

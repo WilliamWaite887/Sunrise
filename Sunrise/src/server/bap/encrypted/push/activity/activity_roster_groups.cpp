@@ -574,6 +574,8 @@ make_retained_squad_auth(const server::activity::host::PendingScriptableOverride
                                          std::uint16_t tableIndex,
                                          std::uint16_t slotOffset,
                                          bool stateLocalRosterTarget) noexcept {
+    // The session's region no longer selects the group: see the estate note below.
+    static_cast<void>(region);
     std::size_t rosterPosition = snapshot.roster.groupCount;
     if (stateLocalRosterTarget) {
         for (std::size_t index = 0; index < snapshot.roster.groupCount; ++index) {
@@ -596,14 +598,15 @@ make_retained_squad_auth(const server::activity::host::PendingScriptableOverride
             rosterPosition = index;
         }
     }
-    const std::uint32_t bubble =
-        region.index >= 0 ? static_cast<std::uint32_t>(region.index)
-                                / middleware::content::packages::tables::kSliceSetIndexFactor
-                          : layouts::kBubbleCapacity;
+    // The retained estate spans the whole mission, but the session holds one bubble at a time. A
+    // group is addressed by the key the roster published it under, so gating this lookup on the
+    // session's current bubble refuses every auth belonging to a bubble the player has left --
+    // and because one refusal fails the whole override, the auths for the bubble the player is
+    // actually in are lost with them. The published roster is the authority: a group found there
+    // is addressable whichever bubble named it.
     for (std::size_t index = 0; !stateLocalRosterTarget && index < layout.bubbleGroupCount;
          ++index) {
-        if (layout.bubbleGroups[index] != tableIndex || bubble >= layouts::kBubbleCapacity
-            || (layout.bubbleGroupMasks[index] & (std::uint64_t{1} << bubble)) == 0) {
+        if (layout.bubbleGroups[index] != tableIndex) {
             continue;
         }
         if (rosterPosition != snapshot.roster.groupCount) {
